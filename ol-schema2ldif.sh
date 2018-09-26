@@ -7,7 +7,10 @@ DEFAULT_OUTPUT_DIR='.'
 
 function fullfilepath {
   local TARGET_FILE="${1}"
-  pushd "$(dirname "${TARGET_FILE}")" 1>/dev/null 
+  pushd "$(dirname "${TARGET_FILE}")" 1>/dev/null
+  if [ $? -ne 0 ] ; then
+    return 1
+  fi 
   local DIR_PATH=$(pwd -P)
   popd 1>/dev/null
   echo "${DIR_PATH}/$(basename "${TARGET_FILE}")"
