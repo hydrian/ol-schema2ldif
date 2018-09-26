@@ -1,33 +1,71 @@
-#!/bin/env -s bash
+#!/bin/bash -x
 
+APP_NAME="$(basename $0)"
 DEFAULT_INDEX='1'
 DEFAULT_CONFIG_FILE="${HOME}/.ol-schema2ldif.conf"
+DEFAULT_OUTPUT_DIR='.'
 
 function fullfilepath {
   local TARGET_FILE="${1}"
-  local FULLPATH
-  
   pushd "$(dirname "${TARGET_FILE}")" 1>/dev/null 
-  DIR_PATH=$(pwd -P)
+  local DIR_PATH=$(pwd -P)
   popd 1>/dev/null
-  echo "${DIR_PATH}/$(basename ${TARGET_FILE})"
+  echo "${DIR_PATH}/$(basename "${TARGET_FILE}")"
   return 0 
 }
 
+#####################
+### Load Defaults ###
+#####################
 CONFIG_FILE="${CONFIG_FILE:-$DEFAULT_CONFIG_FILE}"
 if [ -f "${CONFIG_FILE}" ] ; then
   . "${CONFIG_FILE}"
 fi
 
-
+##########################
+### Loading Parameters ###
+##########################
+DEP_SCHEMA_FILE_LIST=()
+while [[ $# -gt 0 ]] ; do
+  case "${1}" in
+    --depends|-d)
+      DEP_SCHEMA_FILE_LIST+=(${2})
+      shift
+    ;;
+    --schema|-s)
+      SCHEMA_FILE="${2}"
+      shift
+    ;;
+    --index|-i)
+      INDEX="${2}"
+      shift
+    ;;
+    --output|-o)
+      OUTPUT_DIR="${2}"
+      shift
+    ;;
+    *)
+      echo "${1} is an invalid parameter." 1>&2
+      exit 2
+    ;;
+  esac
+  shift
+done
 
 INDEX="${INDEX:-$DEFAULT_INDEX}"
-SCHEMA_FILE=''
 
-LDIF_FILE=''
+#########################
+### Verify Parameters ###
+#########################
 
+if [ -e "${SCHEMA_FILE}" ] ; then
+  SCHEMA_FILE_FULL="$(fullfilepath "${1}")"
+else 
+  echo "Couldn't located ${SCHEMA_FILE}" 1>&2
+  exit 3
+fi 
 
-if [ ! -z ${SLAPTEST_BIN} ] ; then
+if [ -z ${SLAPTEST_BIN} ] ; then
   WHEREIS_OUT="$(whereis -b slaptest)"
   if [ $? -eq 0 ] ; then
     SLAPTEST_BIN="$(echo "$WHEREIS_OUT"|cut -d\  -f 2)" 
@@ -37,36 +75,50 @@ if [ ! -z ${SLAPTEST_BIN} ] ; then
   fi
 fi  
 if [ ! -x "${SLAPTEST_BIN}" ] ; then
-  echo "slaptest(${SLAPTEST_BIN} binary is not found or not executable" 1>&2
+  echo "slaptest(${SLAPTEST_BIN}) binary is not found or not executable" 1>&2
   exit 2
 fi 
 
+DEP_SCHEMA_FILE_LIST_FULL=()
+for FILE in ${DEP_SCHEMA_FILE_LIST[@]}; do
+  if [ -e "${FILE}" ] ; then 
+    DEP_SCHEMA_FILE_LIST_FULL+=($(fullfilepath "$FILE"))
+  else
+    echo "Could not locate dependancy schema file ${FILE}" 1>&2
+    exit 3
+  fi
+done
 
-if [ ! -f "${SCHEMA_FILE}" ] ; then
-  echo "Failed to read schema file ${SCHEMA_FILE}" 1>&2
-  exit 2
+if [ -z "${OUTPUT_DIR}" ] ; then
+  echo "OUTPUT_DIR is not defined" 1>&2
+  exit 3 
 fi
-SCHEMA_FILE_FULL="$(fullfilepath ${SCHEMA_FILE})"
-SCHEMA_FILE_BASE="$(basename ${SCHEMA_FILE_FULL}"
-LDIF_FILE_BASE="${SCHEMA_FILE_BASE%.*}.ldif"
+  
+LDIF_FILE_BASE="$(basename "${SCHEMA_FILE%.*}").ldif"
+
 ##############################
 ### Setup work environment ###
 ############################## 
-WORK_DIR=$(mktemp -d --suffix="$(basename "$0")"
-cp "${SCHEMA_FILE_FULL}" "${WORK_DIR}"
-if [ $? -ne 0 ] ; then
-  echo "Failed to copy ${SCHEMA_FILE_FULL} to work directory" 1>&2
-  exit 2
-fi 
+WORK_DIR=$(mktemp -d --suffix="${APP_NAME}")
 pushd "${WORK_DIR}" 1>/dev/null
+mkdir converted.d
 
 ####################################
 ### Making dummy slapd.conf file ###
 ####################################
-cat EOF >> dummy.conf
-include "${SCHEMA_FILE_BASE}"
+DEP_INCLUDE_STR=''
+for INCLUDE_FILE in "${SCHEMA_FILE_LIST_FULL[@]}" ; do
+   DEP_INCLUDE_STR="${DEP_INCLUDE_STR}include ${INCLUDE_FILE}"$'\n'
+done
+
+cat > dummy.conf << EOF
+${DEP_INCLUDE_STR}
+include ${SCHEMA_FILE_FULL}
 EOF
-mkdir converted.d
+
+#########################
+### Converting config ###
+#########################
 "${SLAPTEST_BIN}" -f dummy.conf -F converted.d
 if [ $? -ne 0 ] ; then
   echo "slaptest convert from schema to ldif failed" 1>&2 
@@ -79,3 +131,6 @@ fi
 if [ ${INDEX} -ne 1 ] ; then
   true
 fi
+
+pushd "converted.d/cn=config/cn=schema"
+OUTPUT_DIR=$(find . -iname \*${SCHEMA_FILE_BASE})
